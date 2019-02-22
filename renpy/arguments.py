@@ -178,6 +178,10 @@ def run():
         '--warp', dest='warp', default=None,
         help='This takes as an argument a filename:linenumber pair, and tries to warp to the statement before that line number.')
 
+    ap.add_argument(
+        "-d", "--debugger", dest="debugger", action="store_true", default=False,
+        help="Runs renpy in remote debugging mode.")
+
     args = renpy.game.args = ap.parse_args()
 
     if args.warp:
@@ -188,6 +192,9 @@ def run():
 
     if args.debug_image_cache:
         renpy.config.debug_image_cache = True
+
+    if args.debugger:
+        renpy.debugger.enabled = True
 
     return True
 

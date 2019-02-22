@@ -24,6 +24,7 @@ import renpy.display
 import renpy.style
 import renpy.sl2
 import renpy.test
+import renpy.debugger
 
 import renpy.game as game
 
@@ -101,6 +102,9 @@ def run(restart):
     # Handle arguments and commands.
     if not renpy.arguments.post_init():
         renpy.exports.quit()
+
+    # Init debugger subsystem
+    renpy.debugger.init()
 
     if renpy.config.clear_lines:
         renpy.scriptedit.lines.clear()

@@ -204,7 +204,7 @@ init python in project:
             self.make_tmp()
             return os.path.join(self.tmp, filename)
 
-        def launch(self, args=[], wait=False, env={}):
+        def launch(self, args=[], wait=False, env={}, debugger=False):
             """
             Launches the project.
 
@@ -217,6 +217,9 @@ init python in project:
 
             `env`
                 Additional variables to include in the environment.
+
+            `debugger`
+                If true, launches the project in the debugger mode.
             """
 
             self.make_tmp()
@@ -252,6 +255,9 @@ init python in project:
             # Add flags to dump game info.
             cmd.append("--json-dump")
             cmd.append(self.get_dump_filename())
+
+            if debugger:
+                cmd.append("--debugger")
 
             if persistent.navigate_private:
                 cmd.append("--json-dump-private")
@@ -731,6 +737,14 @@ init python in project:
 
         def __call__(self):
             self.project.launch()
+            renpy.invoke_in_new_context(self.post_launch)
+
+    class Debug(Launch):
+        def __init__(self, p=None):
+            Launch.__init__(self, p)
+
+        def __call__(self):
+            self.project.launch(debugger=True)
             renpy.invoke_in_new_context(self.post_launch)
 
     class Rescan(Action):

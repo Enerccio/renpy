@@ -239,6 +239,9 @@ screen front_page_project:
                 textbutton _("Delete Persistent") action Jump("rmpersistent")
                 textbutton _("Force Recompile") action Jump("force_recompile")
 
+                textbutton _("Debug Project") action project.Debug()
+                key "K_F6" action project.Debug()
+
                 # textbutton "Relaunch" action Relaunch
 
             frame style "l_indent":
