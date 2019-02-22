@@ -39,6 +39,7 @@ import sys
 import time
 
 import renpy.audio
+import renpy.debugger
 
 ##############################################################################
 # Code that implements the store.
@@ -1926,7 +1927,10 @@ def py_exec_bytecode(bytecode, hide=False, globals=None, locals=None, store="sto
     if locals is None:
         locals = globals  # @ReservedAssignment
 
-    exec bytecode in globals, locals
+    if renpy.debugger.enabled:
+        renpy.debugger.py_exec_bytecode(bytecode, globals, locals)
+    else:
+        exec bytecode in globals, locals
 
 
 def py_exec(source, hide=False, store=None):
@@ -1939,7 +1943,12 @@ def py_exec(source, hide=False, store=None):
     else:
         locals = store  # @ReservedAssignment
 
-    exec py_compile(source, 'exec') in store, locals
+    bytecode = py_compile(source, 'exec')
+
+    if renpy.debugger.enabled:
+        renpy.debugger.py_exec(bytecode, store, locals)
+    else:
+        exec bytecode in store, locals
 
 
 def py_eval_bytecode(bytecode, globals=None, locals=None):  # @ReservedAssignment
@@ -1950,7 +1959,10 @@ def py_eval_bytecode(bytecode, globals=None, locals=None):  # @ReservedAssignmen
     if locals is None:
         locals = globals  # @ReservedAssignment
 
-    return eval(bytecode, globals, locals)
+    if renpy.debugger.enabled:
+        return renpy.debugger.py_eval_bytecode(bytecode, globals, locals)
+    else:
+        return eval(bytecode, globals, locals)
 
 
 def py_eval(code, globals=None, locals=None):  # @ReservedAssignment

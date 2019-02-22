@@ -103,9 +103,6 @@ def run(restart):
     if not renpy.arguments.post_init():
         renpy.exports.quit()
 
-    # Init debugger subsystem
-    renpy.debugger.init()
-
     if renpy.config.clear_lines:
         renpy.scriptedit.lines.clear()
 
@@ -251,6 +248,9 @@ def main():
 
     # Init the config after load.
     renpy.config.init()
+
+    # Init debugger subsystem
+    renpy.debugger.init()
 
     # Set up variants.
     choose_variants()

@@ -256,9 +256,6 @@ init python in project:
             cmd.append("--json-dump")
             cmd.append(self.get_dump_filename())
 
-            if debugger:
-                cmd.append("--debugger")
-
             if persistent.navigate_private:
                 cmd.append("--json-dump-private")
 
@@ -267,6 +264,8 @@ init python in project:
 
             environ = dict(os.environ)
             environ["RENPY_LAUNCHER_LANGUAGE"] = _preferences.language or "english"
+            if debugger:
+                environ["RENPY_DEBUGGER"] = "enabled"
             environ.update(env)
 
             encoded_environ = { }
