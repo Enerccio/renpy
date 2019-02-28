@@ -113,11 +113,15 @@ class DAPMessage(object):
 
         content_size = int(headers["Content-Length"])
 
-        data = socket.recv(content_size)
-        if data == "":
-            return None
+        data = ""
+
+        while (len(data) < content_size):
+            data += socket.recv(content_size-len(data))
+            if data == "":
+                return None
 
         body = json.loads(data, object_hook=NoneDict)
+        # print("RECEIVED: " + str(body))
         return body
 
     @staticmethod
@@ -132,7 +136,7 @@ class DAPMessage(object):
 
     def send(self, socket):
         data = self.serialize(self.seq)
-        print(data)
+        # print("SENT: " + str(data))
         DAPMessage.send_text(socket, data)
 
     def serialize(self, seq):
@@ -708,26 +712,29 @@ class DebugAdapterProtocolServer(threading.Thread):
             DAPSetBreakpointsResponse(rq.seq, [b.serialize() for b in bkps]).set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
         elif rq.command == "configurationDone":
-            DAPResponse(self.next_seq, "configurationDone").set_seq(self.next_seq).send(self._current_client)
+            DAPResponse(rq.seq, "configurationDone").set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
         elif rq.command == "launch":
             # no special noDebug
-            DAPResponse(self.next_seq, "launch").set_seq(self.next_seq).send(self._current_client)
+            DAPResponse(rq.seq, "launch").set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
         elif rq.command == "continue":
-            DAPContinueResponse(self.next_seq, all_threads_continue=True).set_seq(self.next_seq).send(self._current_client)
+            DAPContinueResponse(rq.seq, all_threads_continue=True).set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
             debugger.stepping = SteppingMode.STEP_NO_STEP
             debugger.cont = True
         elif rq.command == "threads":
-            # no special noDebug
-            DAPThreadsResponse(self.next_seq, [{"id": 0, "name": "renpy_main"}]).set_seq(self.next_seq).send(self._current_client)
+            DAPThreadsResponse(rq.seq, [{"id": 0, "name": "renpy_main"}]).set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
         elif rq.command == "stackTrace":
-            # no special noDebug
-            DAPStackTraceResponse(self.next_seq, debugger.get_stack_frames(**rq.kwargs)).set_seq(self.next_seq).send(self._current_client)
+            DAPStackTraceResponse(rq.seq, debugger.get_stack_frames(**rq.kwargs)).set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
-
+        elif rq.command == "scopes":
+            DAPScopesResponse(rq.seq, debugger.get_scopes(int(rq.kwargs["frameId"]))).set_seq(self.next_seq).send(self._current_client)
+            self.next_seq += 1
+        elif rq.command == "variables":
+            DAPVariablesResponse(rq.seq, debugger.format_variable(**rq.kwargs)).set_seq(self.next_seq).send(self._current_client)
+            self.next_seq += 1
         else:
             DAPErrorResponse(rqs=rq.seq, command=rq.command, message="NotImplemented").set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
@@ -817,6 +824,12 @@ class RenpyPythonDebugger(object):
         self.stepping = SteppingMode.STEP_NO_STEP
         self.cont = True
 
+        # holds paths to variables for each scope opened
+        # scope assign containts tuples (value, parent_accessor, type (None for scope))
+        self.scope_assign = {}
+        # current break var id generator (0->more)
+        self.scope_var_id = 0
+
         self.active_call = None
         self.active_frame = None
         self.bkp_lock = threading.Lock()
@@ -825,7 +838,12 @@ class RenpyPythonDebugger(object):
         with self.bkp_lock:
             self.active_breakpoints = set()
             self.stepping = SteppingMode.STEP_NO_STEP
-            self.cont = True
+            self.continue_next()
+
+    def continue_next(self):
+        self.scope_assign = {}
+        self.scope_var_id = 0
+        self.cont = True
 
     def register_breakpoint(self, breakpoint):
         with self.bkp_lock:
@@ -850,6 +868,16 @@ class RenpyPythonDebugger(object):
         Should be used by other thread when debugged main thread is cont=False
         """
         return str(self.active_frame.f_code.co_filename) + ":" + str(self.active_frame.f_lineno)
+
+    def get_frame(self, frame_ord):
+        cframe = self.active_frame
+        c = 0
+        while cframe is not None:
+            if c == frame_ord:
+                return cframe
+            cframe = cframe.f_back
+            c += 1
+        return None
 
     def get_stack_frames(self, threadId=0, startFrame=0, levels=0, format=None):
         # format is ignored, TODO?
@@ -884,17 +912,22 @@ class RenpyPythonDebugger(object):
         res = ""
         is_args = code.co_flags & 4
         is_kwargs = code.co_flags & 8
-        for i in xrange(code.co_argcount):
+        total_args = code.co_argcount
+        if is_args:
+            total_args += 1
+        if is_kwargs:
+            total_args += 1
+        for i in xrange(total_args):
             varname = code.co_varnames[i]
             #varname += "=" + str(locals[varname])
 
-            if is_args and is_kwargs and x == code.co_argcount - 2:
+            if is_args and is_kwargs and i == total_args - 2:
                 varname = "*" + varname
-            elif is_args and is_kwargs and x == code.co_argcount - 1:
+            elif is_args and is_kwargs and i == total_args - 1:
                 varname = "**" + varname
-            elif is_args and x == code.co_argcount - 1:
+            elif is_args and i == total_args - 1:
                 varname = "*" + varname
-            elif is_kwargs and x == code.co_argcount - 1:
+            elif is_kwargs and i == total_args - 1:
                 varname = "**" + varname
             if res == "":
                 res = varname
@@ -902,6 +935,106 @@ class RenpyPythonDebugger(object):
                 res += ", " + varname
 
         return "(%s)" % res
+
+    def get_scopes(self, frame_ord):
+        frame = self.get_frame(frame_ord)
+
+        return [self.get_scope(frame, frame.f_locals, "Locals", False), self.get_scope(frame, frame.f_globals, "Globals", True)]
+
+    def get_scope(self, f, scope_dict, name, expensive):
+        scope_id = self.scope_var_id
+        self.scope_assign[scope_id] = (scope_dict, name, None)
+        self.scope_var_id += 1
+
+        return {
+            "name": name,
+            "variablesReference": scope_id,
+            "expensive": expensive,
+            "namedVariables": len(scope_dict.keys())
+        }
+
+    def format_variable(self, variablesReference, filter=None, start=None, count=None, format=None):
+        # format is ignored, TODO?
+
+        vs = None if start is None or start == 0 else start
+        es = None if count is None or count == 0 else count
+
+        var, name, tt = self.scope_assign[variablesReference]
+
+        # print(str(var) + ", " + str(name) + ", " + str(tt))
+
+        is_slotted = False
+
+        if not isinstance(var, dict) and not isinstance(var, list):
+            if hasattr(var, "__dict__"):
+                var = var.__dict__
+            else:
+                is_slotted = True
+
+        # print (str(var))
+
+        if not is_slotted and isinstance(var, dict):
+            if filter is not None and filter == "indexed":
+                return []
+            keys = sorted(var.keys())
+        elif not is_slotted:
+            if filter is not None and filter == "named":
+                return []
+            keys = range(len(var))
+        elif is_slotted:
+            keys = dir(var)
+
+        if "self" in keys:
+            keys.remove("self")
+            keys = ["self"] + keys
+
+        # print (str(keys))
+
+        it = 0
+        total = 0
+        variables = []
+        for vkey in keys:
+            if vs is None or it >= vs:
+                var_ref = self.scope_var_id
+                if is_slotted:
+                    value = getattr(var, vkey)
+                else:
+                    value = var[vkey]
+
+                vardesc = {}
+                variables.append(vardesc)
+
+                vardesc["name"] = vkey
+                vardesc["value"] = str(value)
+                vardesc["type"] = str(type(value))
+                # vardesc["presentationHint"] # TODO!!!
+                vardesc["evaluateName"] = vkey
+                vardesc["variablesReference"] = var_ref
+
+                vv_inner = value
+                vv_slotted = False
+                if not isinstance(vv_inner, dict) and not isinstance(vv_inner, list):
+                    if hasattr(vv_inner, "__dict__"):
+                        vv_inner = vv_inner.__dict__
+                    else:
+                        vv_slotted = True
+
+                if not vv_slotted and isinstance(vv_inner, dict):
+                    vardesc["namedVariables"] = len(vv_inner.keys())
+                elif not vv_slotted:
+                    vardesc["indexedVariables"] = len(vv_inner)
+                else:
+                    vardesc["namedVariables"] = len(dir(vv_inner))
+
+                self.scope_assign[var_ref] = (value, vkey, str(type(value)))
+
+                self.scope_var_id += 1
+                total += 1
+            it += 1
+            if es is not None and total >= es:
+                break
+
+        return variables
 
     def trace_event(self, frame, event, arg):
         self.active_frame = frame
@@ -939,6 +1072,8 @@ class RenpyPythonDebugger(object):
 
     def break_code(self, breakpoint):
         self.cont = False
+        self.scope_assign = {}
+        self.scope_var_id = 0
         handler.send_breakpoint_event(breakpoint)
 
 

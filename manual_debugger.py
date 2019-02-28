@@ -33,6 +33,18 @@ import traceback
 from renpy.debugger import DAPMessage, debugger_port
 
 
+class Counter(object):
+    def __init__(self):
+        self.state = 0
+
+    def get(self):
+        s = self.state
+        self.state += 1
+        return s
+
+rq_counter = Counter()
+rq_arguments = {}
+
 class State(object):
     @staticmethod
     def load_state(stage=0, tid=0):
@@ -40,13 +52,47 @@ class State(object):
 
         if stage == 0:
             state = State()
-            DAPMessage.send_text(s, json.dumps({"seq":0, "command":"threads"}))
+            DAPMessage.send_text(s, json.dumps({"seq": rq_counter.get(), "command":"threads"}))
         if stage == 1:
-            DAPMessage.send_text(s, json.dumps({"seq":0, "command":"stackTrace", "arguments": {"threadId": tid, "startFrame": 0, "levels": 0}}))
+            DAPMessage.send_text(s, json.dumps({"seq": rq_counter.get(), "command":"stackTrace", "arguments": {"threadId": tid, "startFrame": 0, "levels": 0}}))
+
+    @staticmethod
+    def load_scopes():
+        global state
+
+        DAPMessage.send_text(s, json.dumps({"seq": rq_counter.get(), "command":"scopes", "arguments": {"frameId": state.active_stack}}))
 
     def __init__(self):
         self.threads = []
         self.stacks = {}
+        self.active_stack = 0
+        self.locs = None
+        self.globs = None
+        self.vars = {}
+
+    def load_variable(self, vref):
+        if vref not in self.vars:
+            sq = rq_counter.get()
+            rq_arguments[sq] = vref
+            DAPMessage.send_text(s, json.dumps({"seq": sq, "command":"variables", "arguments": {"variablesReference": vref}}))
+        while vref not in self.vars:
+            pass
+        if self.vars[vref] is None:
+            print "Error retrieving variable %s" % str(vref)
+            del self.vars[vref]
+            return
+
+    def print_variable(self, vref):
+        if vref not in self.vars:
+            return
+
+        variables = self.vars[vref]
+        for v in variables:
+            fmt = "#%s: %s (%s)=%s"
+            if len(v["value"]) > 60:
+                # move to new line
+                "#%s: %s (%s)=\n  %s"
+            print fmt % (str(v["variablesReference"]), str(v["name"]), str(v["type"]), str(v["value"]))
 
 
 class StackTraceElement(object):
@@ -78,6 +124,9 @@ class PrintingDAPMessage(threading.Thread):
                     return
 
                 if request["type"] == "response" and not request["success"]:
+                    if int(request["request_seq"]) in rq_arguments:
+                        parent_varref = rq_arguments[int(request["request_seq"])]
+                        self.vars[vref] = None
                     print request["type"]["message"], request["type"]["body"]["error"]
                 elif request["type"] == "event":
                     if request["event"] == "stopped":
@@ -99,6 +148,19 @@ class PrintingDAPMessage(threading.Thread):
                             st.line = sf["line"]
                             stacks.append(st)
                         state.stacks["0"] = stacks
+                        state.active_stack = 0
+                        state.locs = None
+                        state.globs = None
+                        state.vars = {}
+                        State.load_scopes()
+                    elif request["command"] == "scopes":
+                        state.locs = request["body"]["scopes"][0]
+                        state.globs = request["body"]["scopes"][1]
+                        state.vars = {}
+                    elif request["command"] == "variables":
+                        parent_varref = rq_arguments[int(request["request_seq"])]
+                        state.vars[parent_varref] = request["body"]["variables"]
+
 
         except BaseException as e:
             # failure while communicating
@@ -120,7 +182,7 @@ def mk_breakpoints():
     breakpoint_requests = []
     for source in source_map:
         req = {}
-        req["seq"] = 0 # renpy debugger ignores seq anyways, but tries to be correct
+        req["seq"] = rq_counter.get() # renpy debugger ignores seq anyways, but tries to be correct
         req["command"] = "setBreakpoints"
         args = {}
         req["arguments"] = args
@@ -149,12 +211,12 @@ while True:
             s = None
             continue
 
-        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"initialize"}))
+        DAPMessage.send_text(s, json.dumps({"seq": rq_counter.get(), "command":"initialize"}))
         for breakpoint_request, display in mk_breakpoints():
             DAPMessage.send_text(s, json.dumps(breakpoint_request))
             print display
-        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"configurationDone"}))
-        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"launch"}))
+        DAPMessage.send_text(s, json.dumps({"seq": rq_counter.get(), "command":"configurationDone"}))
+        DAPMessage.send_text(s, json.dumps({"seq": rq_counter.get(), "command":"launch"}))
         print "Connected!"
     elif data.startswith("b "):
         try:
@@ -164,7 +226,7 @@ while True:
             print "Failed to insert breakpoint, check syntax"
     elif data.startswith("c") and in_wait:
         state = None
-        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"continue", "arguments":{"threadId":0}}))
+        DAPMessage.send_text(s, json.dumps({"seq": rq_counter.get(), "command":"continue", "arguments":{"threadId":0}}))
     elif data == "threads" and state is not None:
         print "Threads:"
         for t in state.threads:
@@ -184,5 +246,38 @@ while True:
                     print "#%s: <%s:%s> %s " % (st.id, st.source, str(st.line), st.name)
         except:
             print "Failed to display bt, check syntax"
+    elif (data == "st" or data.startswith("st ")) and state is not None:
+        if data == "st":
+            state.active_stack = 0
+            state.locs = None
+            state.globs = None
+            state.vars = {}
+            State.load_scopes()
+        else:
+            try:
+                state.active_stack = int(data[3:])
+                if state.active_stack >= len(state.stacks["0"]):
+                    print "Invalid stack frame number, set to " + str(len(state.stacks["0"]) - 1)
+                    state.active_stack = len(state.stacks["0"]) - 1
+                state.locs = None
+                state.globs = None
+                state.vars = {}
+                State.load_scopes()
+            except:
+                print "Failed to set active stack frame, check syntax"
+    elif data == "locals" and state is not None:
+        state.load_variable(state.locs["variablesReference"])
+        state.print_variable(state.locs["variablesReference"])
+    elif data == "globals" and state is not None:
+        state.load_variable(state.globs["variablesReference"])
+        state.print_variable(state.globs["variablesReference"])
+    elif data.startswith("v "):
+        try:
+            varRef = int(data[2:])
+        except:
+            print "Failed to get variable, check syntax"
+        state.load_variable(varRef)
+        state.print_variable(varRef)
+
     elif data.startswith("{") and s: # raw request
         DAPMessage.send_text(s, data)
