@@ -82,7 +82,10 @@ class DAPMessage(object):
         body = DAPMessage.recv_raw(socket)
 
         if body is not None:
-            rq = DAPRequest(command=body["command"], **body["arguments"])
+            kwargs = body["arguments"]
+            if kwargs is None:
+                kwargs = {}
+            rq = DAPRequest(command=body["command"], **kwargs)
             rq.set_seq(body["seq"])
             return rq
 
@@ -689,6 +692,8 @@ class DebugAdapterProtocolServer(threading.Thread):
         finally:
             self._current_client = None
 
+            debugger.reset()
+
     def resolve_message(self, rq):
         if rq.command == "initialize":
             DAPInitializeResponse(rq.seq, features).set_seq(self.next_seq).send(self._current_client)
@@ -707,6 +712,11 @@ class DebugAdapterProtocolServer(threading.Thread):
             # no special noDebug
             DAPResponse(self.next_seq, "launch").set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
+        elif rq.command == "continue":
+            DAPContinueResponse(self.next_seq, all_threads_continue=True).set_seq(self.next_seq).send(self._current_client)
+            self.next_seq += 1
+            debugger.stepping = SteppingMode.STEP_NO_STEP
+            debugger.cont = True
 
         else:
             DAPErrorResponse(rqs=rq.seq, command=rq.command, message="NotImplemented").set_seq(self.next_seq).send(self._current_client)
@@ -731,7 +741,7 @@ class DebugAdapterProtocolServer(threading.Thread):
         return created_breakpoints
 
     def send_breakpoint_event(self, breakpoint):
-        DAPStoppedEvent(reason="breakpoint", description="Hit a breakpoint",
+        DAPStoppedEvent(reason="breakpoint", description=debugger.frame_location_info(),
                         thread_id=0, preserve_focus_hint=False,
                         all_threads_stopped=True).set_seq(self.next_seq).send(self._current_client)
         self.next_seq += 1
@@ -741,7 +751,7 @@ class DebugAdapterProtocolServer(threading.Thread):
 class Breakpoint(object):
     def __init__(self, source, line, eval_condition=None, counter=None):
         self.source = source
-        self.line = line
+        self.line = int(line) if isinstance(line, str) else line
         self.eval_condition = eval_condition
         self.counter = counter
         self.times_hit = 0
@@ -795,13 +805,21 @@ class RenpyPythonDebugger(object):
         self.active_breakpoints = set()
 
         self.stepping = SteppingMode.STEP_NO_STEP
+        self.cont = True
 
         self.active_call = None
         self.active_frame = None
-        self.cont = True
+        self.bkp_lock = threading.Lock()
+
+    def reset(self):
+        with self.bkp_lock:
+            self.active_breakpoints = set()
+            self.stepping = SteppingMode.STEP_NO_STEP
+            self.cont = True
 
     def register_breakpoint(self, breakpoint):
-        self.active_breakpoints.add(breakpoint)
+        with self.bkp_lock:
+            self.active_breakpoints.add(breakpoint)
 
     def attach(self):
         if self._attach_count == 0:
@@ -815,6 +833,13 @@ class RenpyPythonDebugger(object):
 
             self.active_frame = None
             self.active_call = None
+
+    def frame_location_info(self):
+        """Returns location information about current frame.
+
+        Should be used by other thread when debugged main thread is cont=False
+        """
+        return str(self.active_frame.f_code.co_filename) + ":" + str(self.active_frame.f_lineno)
 
     def trace_event(self, frame, event, arg):
         self.active_frame = frame
@@ -836,9 +861,15 @@ class RenpyPythonDebugger(object):
         if self.stepping != SteppingMode.STEP_NO_STEP:
             pass # TODO
         else:
-            for breakpoint in self.active_breakpoints:
-                if breakpoint.applies(frame):
-                    self.break_code(breakpoint) # blocks
+            breaking_on = None
+            with self.bkp_lock:
+                for breakpoint in self.active_breakpoints:
+                    if breakpoint.applies(frame):
+                        breaking_on = breakpoint
+                        break
+
+            if breaking_on is not None:
+                self.break_code(breaking_on) # blocks
 
         while not self.cont:
             pass

@@ -28,6 +28,7 @@ import threading
 import socket
 import json
 import readline
+import traceback
 
 from renpy.debugger import DAPMessage, debugger_port
 
@@ -40,30 +41,86 @@ class PrintingDAPMessage(threading.Thread):
         self.start()
 
     def run(self):
+        global in_wait
+
         try:
             while True:
                 request = DAPMessage.recv_raw(self.socket)
-                print request
+                # print request
+
                 if request is None:
-                    # client terminated without termination request
+                    print "Disconnected"
                     return
+
+                if request["type"] == "response" and not request["success"]:
+                    print request["type"]["message"], request["type"]["body"]["error"]
+                if request["type"] == "event":
+                    if request["event"] == "stopped":
+                        print "Stopped (" + request["body"]["reason"] + ")", request["body"]["description"]
+                        in_wait = True
 
         except BaseException as e:
             # failure while communicating
-            print(e)
-            pass
-        finally:
-            self._current_client = None
+            traceback.print_exc()
 
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.connect(("127.0.0.1", debugger_port))
-PrintingDAPMessage(s)
+s = None
+in_wait = False
+
+breakpoints = set()
+
+def mk_breakpoints():
+    source_map = {}
+    for src, line in breakpoints:
+        if src not in source_map:
+            source_map[src] = set()
+        source_map[src].add(line)
+
+    breakpoint_requests = []
+    for source in source_map:
+        req = {}
+        req["seq"] = 0 # renpy debugger ignores seq anyways, but tries to be correct
+        req["command"] = "setBreakpoints"
+        args = {}
+        req["arguments"] = args
+        args["source"] = { "path": source }
+        args["breakpoints"] = [{"line": l} for l in source_map[source]]
+
+        display = "Installed breakpoints %s for source %s" %(str(source_map[source]), source)
+
+        breakpoint_requests.append((req, display))
+
+    return breakpoint_requests
+
 
 while True:
-    data = raw_input(">>>")
-    if data == "reconnect":
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect(("127.0.0.1", debugger_port))
-        PrintingDAPMessage(s)
-    else:
+    data = raw_input("")
+
+    if data == "connect":
+        print "Establishing connection"
+
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect(("127.0.0.1", debugger_port))
+            PrintingDAPMessage(s)
+        except:
+            print "Failed. Is renpy debugged game running?"
+            s = None
+            continue
+
+        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"initialize"}))
+        for breakpoint_request, display in mk_breakpoints():
+            DAPMessage.send_text(s, json.dumps(breakpoint_request))
+            print display
+        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"configurationDone"}))
+        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"launch"}))
+        print "Connected!"
+    elif data.startswith("b"):
+        try:
+            file, line = data[2:].split(":")
+            breakpoints.add((file, int(line)))
+        except:
+            print "Failed to insert breakpoint, check syntax"
+    elif data.startswith("c") and in_wait:
+        DAPMessage.send_text(s, json.dumps({"seq":0, "command":"continue", "arguments":{"threadId":0}}))
+    elif data.startswith("{") and s: # raw request
         DAPMessage.send_text(s, data)
