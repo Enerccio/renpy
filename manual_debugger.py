@@ -265,6 +265,8 @@ while True:
                 State.load_scopes()
             except:
                 print "Failed to set active stack frame, check syntax"
+        st = state.stacks["0"][state.active_stack]
+        print "Set stack to #%s: <%s:%s> %s  "  % (st.id, st.source, str(st.line), st.name)
     elif data == "locals" and state is not None:
         state.load_variable(state.locs["variablesReference"])
         state.print_variable(state.locs["variablesReference"])

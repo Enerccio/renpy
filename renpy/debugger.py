@@ -825,7 +825,7 @@ class RenpyPythonDebugger(object):
         self.cont = True
 
         # holds paths to variables for each scope opened
-        # scope assign containts tuples (value, parent_accessor, type (None for scope))
+        # scope assign containts tuples (value, parent_accessor, type (None for scope), parent_object)
         self.scope_assign = {}
         # current break var id generator (0->more)
         self.scope_var_id = 0
@@ -943,7 +943,7 @@ class RenpyPythonDebugger(object):
 
     def get_scope(self, f, scope_dict, name, expensive):
         scope_id = self.scope_var_id
-        self.scope_assign[scope_id] = (scope_dict, name, None)
+        self.scope_assign[scope_id] = (scope_dict, None, None, None)
         self.scope_var_id += 1
 
         return {
@@ -959,7 +959,7 @@ class RenpyPythonDebugger(object):
         vs = None if start is None or start == 0 else start
         es = None if count is None or count == 0 else count
 
-        var, name, tt = self.scope_assign[variablesReference]
+        var, name, tt, parent = self.scope_assign[variablesReference]
 
         # print(str(var) + ", " + str(name) + ", " + str(tt))
 
@@ -1026,7 +1026,7 @@ class RenpyPythonDebugger(object):
                 else:
                     vardesc["namedVariables"] = len(dir(vv_inner))
 
-                self.scope_assign[var_ref] = (value, vkey, str(type(value)))
+                self.scope_assign[var_ref] = (value, vkey, str(type(value)), var)
 
                 self.scope_var_id += 1
                 total += 1
