@@ -894,6 +894,8 @@ def menu(items, set_expr, args=None, kwargs=None, item_arguments=None):
     args = args or tuple()
     kwargs = kwargs or dict()
 
+    nvl = kwargs.pop("nvl", False)
+
     if renpy.config.menu_arguments_callback is not None:
         args, kwargs = renpy.config.menu_arguments_callback(*args, **kwargs)
 
@@ -966,7 +968,10 @@ def menu(items, set_expr, args=None, kwargs=None, item_arguments=None):
         menu_args = args
         menu_kwargs = kwargs
 
-        rv = renpy.store.menu(new_items)
+        if nvl:
+            rv = renpy.store.nvl_menu(new_items)  # @UndefinedVariable
+        else:
+            rv = renpy.store.menu(new_items)
 
     finally:
         menu_args = old_menu_args
@@ -1376,6 +1381,7 @@ def imagemap(ground, selected, hotspots, unselected=None, overlays=False,
 def pause(delay=None, music=None, with_none=None, hard=False, checkpoint=None):
     """
     :doc: other
+    :args: (delay=None, hard=False)
 
     Causes Ren'Py to pause. Returns true if the user clicked to end the pause,
     or false if the pause timed out or was skipped.
@@ -1383,20 +1389,23 @@ def pause(delay=None, music=None, with_none=None, hard=False, checkpoint=None):
     `delay`
         If given, the number of seconds Ren'Py should pause for.
 
-    `music`
-        Retained for compatibility purposes.
-
-    `with_none`
-        Determines if a with None clause is executed at the end of the pause.
-
     `hard`
-        If true, a click will not interrupt the pause. Use this sparingly,
-        as it's hard to distinguish a hard pause from a crashing game.
+        This must be given as a keyword argument. When True, Ren'Py may prevent
+        the user from clicking to interrupt the pause. If the player enables
+        skipping, the hard pause will be skipped. There may be other circumstances
+        where the hard pause ends early or prevents Ren'Py from operating properly,
+        these will not be treated as bugs.
 
-    `checkpoint`
-        If true, a checkpoint will be set, and players will be able to roll
-        back to this statement. If false, no checkpoint will be set. If None,
-        a checkpoint will only be set if delay is set.
+        In general, using hard pauses is rude. When the user clicks to advance
+        the game, it's an explicit request - the user wishes the game to advance.
+        To override that request is to assume you understand what the player
+        wants more than the player does.
+
+        Calling renpy.pause guarantees that whatever is on the screen will be
+        displayed for at least one frame, and hence has been shown to the
+        player.
+
+        tl;dr - Don't use renpy.pause with hard=True.
     """
 
     if checkpoint is None:
