@@ -32,6 +32,31 @@ import traceback
 
 from renpy.debugger import DAPMessage, debugger_port
 
+
+class State(object):
+    @staticmethod
+    def load_state(stage=0, tid=0):
+        global state
+
+        if stage == 0:
+            state = State()
+            DAPMessage.send_text(s, json.dumps({"seq":0, "command":"threads"}))
+        if stage == 1:
+            DAPMessage.send_text(s, json.dumps({"seq":0, "command":"stackTrace", "arguments": {"threadId": tid, "startFrame": 0, "levels": 0}}))
+
+    def __init__(self):
+        self.threads = []
+        self.stacks = {}
+
+
+class StackTraceElement(object):
+    def __init__(self):
+        self.id = None
+        self.name = None
+        self.source = "<unavailable>"
+        self.line = None
+
+
 class PrintingDAPMessage(threading.Thread):
     def __init__(self, socket):
         threading.Thread.__init__(self)
@@ -54,10 +79,26 @@ class PrintingDAPMessage(threading.Thread):
 
                 if request["type"] == "response" and not request["success"]:
                     print request["type"]["message"], request["type"]["body"]["error"]
-                if request["type"] == "event":
+                elif request["type"] == "event":
                     if request["event"] == "stopped":
                         print "Stopped (" + request["body"]["reason"] + ")", request["body"]["description"]
                         in_wait = True
+                        State.load_state(0)
+                elif request["type"] == "response":
+                    if request["command"] == "threads":
+                        for t in request["body"]["threads"]:
+                            state.threads.append((t["id"], t["name"]))
+                            State.load_state(1, tid=t["id"])
+                    elif request["command"] == "stackTrace":
+                        stacks = []
+                        for sf in request["body"]["stackFrames"]:
+                            st = StackTraceElement()
+                            st.id = sf["id"]
+                            st.name = sf["name"]
+                            st.source = sf["source"]["path"] if sf["source"] is not None else None
+                            st.line = sf["line"]
+                            stacks.append(st)
+                        state.stacks["0"] = stacks
 
         except BaseException as e:
             # failure while communicating
@@ -65,6 +106,7 @@ class PrintingDAPMessage(threading.Thread):
 
 s = None
 in_wait = False
+state = None
 
 breakpoints = set()
 
@@ -114,13 +156,33 @@ while True:
         DAPMessage.send_text(s, json.dumps({"seq":0, "command":"configurationDone"}))
         DAPMessage.send_text(s, json.dumps({"seq":0, "command":"launch"}))
         print "Connected!"
-    elif data.startswith("b"):
+    elif data.startswith("b "):
         try:
             file, line = data[2:].split(":")
             breakpoints.add((file, int(line)))
         except:
             print "Failed to insert breakpoint, check syntax"
     elif data.startswith("c") and in_wait:
+        state = None
         DAPMessage.send_text(s, json.dumps({"seq":0, "command":"continue", "arguments":{"threadId":0}}))
+    elif data == "threads" and state is not None:
+        print "Threads:"
+        for t in state.threads:
+            print "Threads #%s: %s" % (str(t[0]), t[1])
+    elif data.startswith("bt") and state is not None:
+        try:
+            if data == "bt":
+                thread_id = "0"
+            else:
+                thread_id = data[3:]
+            print "Backtrace for thread [%s]" % thread_id
+
+            if thread_id not in state.stacks:
+                print "No thread %s available" % thread_id
+            else:
+                for st in state.stacks[thread_id]:
+                    print "#%s: <%s:%s> %s " % (st.id, st.source, str(st.line), st.name)
+        except:
+            print "Failed to display bt, check syntax"
     elif data.startswith("{") and s: # raw request
         DAPMessage.send_text(s, data)

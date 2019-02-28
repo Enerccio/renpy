@@ -122,7 +122,7 @@ class DAPMessage(object):
 
     @staticmethod
     def parse_headers(headers):
-        h = {}
+        h = NoneDict({})
         for hl in headers:
             type, value = hl.split(":")
             type = type.strip()
@@ -131,7 +131,9 @@ class DAPMessage(object):
         return h
 
     def send(self, socket):
-        DAPMessage.send_text(socket, self.serialize(self.seq))
+        data = self.serialize(self.seq)
+        print(data)
+        DAPMessage.send_text(socket, data)
 
     def serialize(self, seq):
         message = {}
@@ -717,6 +719,14 @@ class DebugAdapterProtocolServer(threading.Thread):
             self.next_seq += 1
             debugger.stepping = SteppingMode.STEP_NO_STEP
             debugger.cont = True
+        elif rq.command == "threads":
+            # no special noDebug
+            DAPThreadsResponse(self.next_seq, [{"id": 0, "name": "renpy_main"}]).set_seq(self.next_seq).send(self._current_client)
+            self.next_seq += 1
+        elif rq.command == "stackTrace":
+            # no special noDebug
+            DAPStackTraceResponse(self.next_seq, debugger.get_stack_frames(**rq.kwargs)).set_seq(self.next_seq).send(self._current_client)
+            self.next_seq += 1
 
         else:
             DAPErrorResponse(rqs=rq.seq, command=rq.command, message="NotImplemented").set_seq(self.next_seq).send(self._current_client)
@@ -841,6 +851,58 @@ class RenpyPythonDebugger(object):
         """
         return str(self.active_frame.f_code.co_filename) + ":" + str(self.active_frame.f_lineno)
 
+    def get_stack_frames(self, threadId=0, startFrame=0, levels=0, format=None):
+        # format is ignored, TODO?
+        # threadId is ignored since renpy is single threaded for stuff we need
+
+        clevel = 0
+        slevel = 0 if startFrame is None else startFrame
+        elevel = None if levels is None or levels == 0 else levels
+
+        frames = []
+        cframe = self.active_frame
+        while cframe is not None:
+            if clevel >= slevel:
+                finfo = {}
+
+                finfo["id"] = clevel
+                finfo["name"] = cframe.f_code.co_name + self.format_method_signature(cframe.f_locals, cframe.f_code)
+                finfo["source"] = {"path" : cframe.f_code.co_filename }
+                finfo["line"] = cframe.f_lineno
+                finfo["presentationHint"] = "normal"
+                finfo["column"] = 0
+
+                frames.append(finfo)
+            clevel += 1
+            if elevel is not None and clevel >= elevel:
+                break
+            cframe = cframe.f_back
+
+        return frames
+
+    def format_method_signature(self, locals, code):
+        res = ""
+        is_args = code.co_flags & 4
+        is_kwargs = code.co_flags & 8
+        for i in xrange(code.co_argcount):
+            varname = code.co_varnames[i]
+            #varname += "=" + str(locals[varname])
+
+            if is_args and is_kwargs and x == code.co_argcount - 2:
+                varname = "*" + varname
+            elif is_args and is_kwargs and x == code.co_argcount - 1:
+                varname = "**" + varname
+            elif is_args and x == code.co_argcount - 1:
+                varname = "*" + varname
+            elif is_kwargs and x == code.co_argcount - 1:
+                varname = "**" + varname
+            if res == "":
+                res = varname
+            else:
+                res += ", " + varname
+
+        return "(%s)" % res
+
     def trace_event(self, frame, event, arg):
         self.active_frame = frame
         self.active_call = frame
@@ -869,6 +931,7 @@ class RenpyPythonDebugger(object):
                         break
 
             if breaking_on is not None:
+                print("Broke at %s %s %s (%s))" % (event, "<File %s, Line %s>" % (frame.f_code.co_filename, frame.f_lineno), str(arg), str(id(threading.current_thread()))))
                 self.break_code(breaking_on) # blocks
 
         while not self.cont:
