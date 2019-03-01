@@ -235,7 +235,6 @@ def choose_variants():
 
 
 def main():
-
     log_clock("Bootstrap to the start of init.init")
 
     renpy.game.exception_info = 'Before loading the script.'
@@ -250,7 +249,12 @@ def main():
     renpy.config.init()
 
     # Init debugger subsystem
-    renpy.debugger.init()
+    # this either calls renpy_main callback immediately or attaches debugger and then calls or waits depending
+    # on env settings
+    renpy.debugger.init(renpy_main)
+
+
+def renpy_main():
 
     # Set up variants.
     choose_variants()

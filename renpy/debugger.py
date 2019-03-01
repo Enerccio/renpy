@@ -32,6 +32,9 @@ import threading
 import socket
 import json
 import traceback
+import types
+
+from opcode import *
 
 debugger_port = 14711
 
@@ -52,8 +55,8 @@ features = {
     "supportsStepInTargetsRequest": False,
     "supportsSetExpression": False,
     "supportsGotoTargetsRequest": False,
+    "supportsFunctionBreakpoints": False,
 
-    "supportsFunctionBreakpoints": True,
     "supportsConditionalBreakpoints": True,
     "supportsHitConditionalBreakpoints": True,
 }
@@ -900,6 +903,18 @@ class RenpyPythonDebugger(object):
                 finfo["presentationHint"] = "normal"
                 finfo["column"] = 0
 
+                dis_info = {}
+                finfo["subsource"] = dis_info
+
+                disassembled = dis(cframe.f_code, cframe.f_lasti)
+                dis_info["sources"] = [{"text": self.format_disassembly(cframe.f_lineno, *de), "line": de[1], "source": finfo["source"]} for de in disassembled]
+                ord = 0
+                for de in disassembled:
+                    if de[0]:
+                        break
+                    ord += 1
+                finfo["subsourceElement"] = ord
+
                 frames.append(finfo)
             clevel += 1
             if elevel is not None and clevel >= elevel:
@@ -907,6 +922,22 @@ class RenpyPythonDebugger(object):
             cframe = cframe.f_back
 
         return frames
+
+    def format_disassembly(self, cline, current, python_lineno, bytecode_offset, instruction, arg, constant):
+        fmtd = ""
+
+        if bytecode_offset is not None:
+            fmtd += str(bytecode_offset) + " "
+
+        fmtd += "[" + instruction + "]"
+
+        if python_lineno is not None:
+            fmtd += " at line " + str(python_lineno + cline)
+
+        if arg is not None:
+            fmtd += " (%s, %s)" % (str(arg), str(constant))
+
+        return fmtd
 
     def format_method_signature(self, locals, code):
         res = ""
@@ -1077,31 +1108,7 @@ class RenpyPythonDebugger(object):
         handler.send_breakpoint_event(breakpoint)
 
 
-def py_exec_bytecode(bytecode, globals, locals):
-    try:
-        debugger.attach()
-        exec bytecode in globals, locals
-    finally:
-        debugger.detach()
-
-
-def py_exec(bytecode, store, locals):
-    try:
-        debugger.attach()
-        exec bytecode in store, locals
-    finally:
-        debugger.detach()
-
-
-def py_eval_bytecode(bytecode, globals, locals):
-    try:
-        debugger.attach()
-        return eval(bytecode, globals, locals)
-    finally:
-        debugger.detach()
-
-
-def init():
+def init(continue_callback):
     global enabled
     enabled = "RENPY_DEBUGGER" in os.environ and os.environ["RENPY_DEBUGGER"] == "enabled"
 
@@ -1110,3 +1117,129 @@ def init():
 
         debugger = RenpyPythonDebugger()
         handler = DebugAdapterProtocolServer()
+
+        debugger.attach()
+        try:
+            continue_callback()
+        finally:
+            debugger.detach()
+    else:
+        continue_callback()
+
+
+# disassembler - sane one
+
+class DisElement(object):
+    def __init__(self):
+        self.py_line = None
+        self.bytecode_offset = None
+        self.instruction = None
+        self.arg = None
+        self.readable_arg = None
+        self.current = False
+
+    # resulted object is (current, python_lineno, bytecode_offset, instruction, arg, constant)
+    def to_tuple(self):
+        return (self.current, self.py_line, self.bytecode_offset, self.instruction, self.arg, self.readable_arg)
+
+
+def dis(co, lasti=-1):
+    """Disassemble a code object."""
+    result = []
+
+    code = co.co_code
+    labels = findlabels(code)
+    linestarts = dict(findlinestarts(co))
+    n = len(code)
+    i = 0
+    extended_arg = 0
+    free = None
+    while i < n:
+        c = code[i]
+        op = ord(c)
+        de = DisElement()
+        result.append(de)
+
+        if i in linestarts:
+            de.python_lineno = linestarts[i]
+
+        de.current = i == lasti
+        de.bytecode_offset = i
+        de.instruction = opname[op]
+        i = i+1
+        if op >= HAVE_ARGUMENT:
+            oparg = ord(code[i]) + ord(code[i+1])*256 + extended_arg
+            extended_arg = 0
+            i = i+2
+            if op == EXTENDED_ARG:
+                extended_arg = oparg*65536L
+            de.arg = oparg
+
+
+            if op in hasconst:
+                de.readable_arg = co.co_consts[oparg]
+            elif op in hasname:
+                de.readable_arg = co.co_names[oparg]
+            elif op in hasjrel:
+                de.readable_arg = i + oparg
+            elif op in haslocal:
+                de.readable_arg = co.co_varnames[oparg]
+            elif op in hascompare:
+                de.readable_arg = cmp_op[oparg]
+            elif op in hasfree:
+                if free is None:
+                    free = co.co_cellvars + co.co_freevars
+                de.readable_arg = free[oparg]
+
+    r = [d.to_tuple() for d in result]
+    return r
+
+
+def findlabels(code):
+    """Detect all offsets in a byte code which are jump targets.
+
+    Return the list of offsets.
+
+    """
+    labels = []
+    n = len(code)
+    i = 0
+    while i < n:
+        c = code[i]
+        op = ord(c)
+        i = i+1
+        if op >= HAVE_ARGUMENT:
+            oparg = ord(code[i]) + ord(code[i+1])*256
+            i = i+2
+            label = -1
+            if op in hasjrel:
+                label = i+oparg
+            elif op in hasjabs:
+                label = oparg
+            if label >= 0:
+                if label not in labels:
+                    labels.append(label)
+    return labels
+
+
+def findlinestarts(code):
+    """Find the offsets in a byte code which are start of lines in the source.
+
+    Generate pairs (offset, lineno) as described in Python/compile.c.
+
+    """
+    byte_increments = [ord(c) for c in code.co_lnotab[0::2]]
+    line_increments = [ord(c) for c in code.co_lnotab[1::2]]
+
+    lastlineno = None
+    lineno = code.co_firstlineno
+    addr = 0
+    for byte_incr, line_incr in zip(byte_increments, line_increments):
+        if byte_incr:
+            if lineno != lastlineno:
+                yield (addr, lineno)
+                lastlineno = lineno
+            addr += byte_incr
+        lineno += line_incr
+    if lineno != lastlineno:
+        yield (addr, lineno)

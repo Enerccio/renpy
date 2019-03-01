@@ -101,6 +101,8 @@ class StackTraceElement(object):
         self.name = None
         self.source = "<unavailable>"
         self.line = None
+        self.bytepos = None
+        self.sselements = []
 
 
 class PrintingDAPMessage(threading.Thread):
@@ -146,6 +148,8 @@ class PrintingDAPMessage(threading.Thread):
                             st.name = sf["name"]
                             st.source = sf["source"]["path"] if sf["source"] is not None else None
                             st.line = sf["line"]
+                            st.bytepos = sf["subsourceElement"] if sf["subsourceElement"] is not None else None
+                            st.sselements = [x["text"] for x in sf["subsource"]["sources"]] if sf["subsource"] is not None else []
                             stacks.append(st)
                         state.stacks["0"] = stacks
                         state.active_stack = 0
@@ -246,6 +250,15 @@ while True:
                     print "#%s: <%s:%s> %s " % (st.id, st.source, str(st.line), st.name)
         except:
             print "Failed to display bt, check syntax"
+    elif data.startswith("bytet") and state is not None:
+        st = state.stacks["0"][state.active_stack]
+        print "Bytecode of stack frame #%s: <%s:%s> %s  "  % (st.id, st.source, str(st.line), st.name)
+        i = 0
+        for bytecode in st.sselements:
+            if i == st.bytepos:
+                print "* ",
+            print bytecode
+            i += 1
     elif (data == "st" or data.startswith("st ")) and state is not None:
         if data == "st":
             state.active_stack = 0
