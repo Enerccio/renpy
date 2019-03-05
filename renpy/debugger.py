@@ -648,6 +648,8 @@ class DebugAdapterProtocolServer(threading.Thread):
         super(DebugAdapterProtocolServer, self).__init__(name="DAP")
         self.daemon = True
         self._current_client = None
+        # True if there is client connected whom is all set up
+        self._ready_for_events = False
 
         self.start()
 
@@ -692,6 +694,7 @@ class DebugAdapterProtocolServer(threading.Thread):
                     continue
 
                 if self._current_client is None:
+                    self._ready_for_events = False
                     return # terminated
 
         except BaseException as e:
@@ -700,6 +703,7 @@ class DebugAdapterProtocolServer(threading.Thread):
             pass
         finally:
             self._current_client = None
+            self._ready_for_events = False
 
             debugger.reset()
 
@@ -717,6 +721,7 @@ class DebugAdapterProtocolServer(threading.Thread):
         elif rq.command == "configurationDone":
             DAPResponse(rq.seq, "configurationDone").set_seq(self.next_seq).send(self._current_client)
             self.next_seq += 1
+            self._ready_for_events = False
         elif rq.command == "launch":
             # no special noDebug
             DAPResponse(rq.seq, "launch").set_seq(self.next_seq).send(self._current_client)
@@ -765,7 +770,6 @@ class DebugAdapterProtocolServer(threading.Thread):
                         thread_id=0, preserve_focus_hint=False,
                         all_threads_stopped=True).set_seq(self.next_seq).send(self._current_client)
         self.next_seq += 1
-
 
 
 class Breakpoint(object):
