@@ -114,6 +114,8 @@ from renpy.ast import eval_who
 
 from renpy.loader import add_python_directory
 
+from renpy.lint import try_compile, try_eval
+
 renpy_pure("ParameterizedText")
 renpy_pure("Keymap")
 renpy_pure("has_screen")
@@ -182,6 +184,7 @@ def public_api():
     eval_who
     is_selected, is_sensitive
     add_python_directory
+    try_compile, try_eval
 
 
 del public_api
@@ -1463,12 +1466,12 @@ def movie_cutscene(filename, delay=None, loops=0, stop_music=True):
     """
     :doc: movie_cutscene
 
-    This displays an MPEG-1 cutscene for the specified number of
+    This displays a movie cutscene for the specified number of
     seconds. The user can click to interrupt the cutscene.
     Overlays and Underlays are disabled for the duration of the cutscene.
 
     `filename`
-        The name of a file containing an MPEG-1 movie.
+        The name of a file containing any movie playable by Ren'Py.
 
     `delay`
         The number of seconds to wait before ending the cutscene.
@@ -2370,6 +2373,14 @@ def pop_error_handler():
 
 
 def error(msg):
+    """
+    :doc: lint
+
+    Reports `msg`, a string, as as error for the user. This is logged as a
+    parse or lint error when approprate, and otherwise it is raised as an
+    exception.
+    """
+
     _error_handlers[-1](msg)
 
 
